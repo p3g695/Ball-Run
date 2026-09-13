@@ -37,6 +37,8 @@
       background: rgba(0,0,0,0.5);
       padding: 10px 15px;
       border-radius: 8px;
+      display: flex;
+      gap: 12px;
     }
     #powerup-status {
       position: absolute;
@@ -111,7 +113,10 @@
   </div>
 
   <div id="score-board">
-    Score: <span id="dist">0</span> | High Score: <span id="high-score">0</span> | Checkpoint: <span id="cp">0</span>
+    <span>🪙 <span id="coins">0</span></span> | 
+    <span>Score: <span id="dist">0</span></span> | 
+    <span>High: <span id="high-score">0</span></span> | 
+    <span>CP: <span id="cp">0</span></span>
   </div>
 
   <div id="powerup-status">
@@ -131,6 +136,7 @@
     <div id="new-best-banner" class="new-best" style="display: none;">NEW BEST! 🎉</div>
     <div style="color: #ff4757; font-size: 36px;">GAME OVER</div>
     <div>Score: <span id="final-score">0</span></div>
+    <div>Coins Collected: <span id="final-coins">0</span></div>
     <div>Best Score: <span id="final-high-score">0</span></div>
     <button id="restart-btn" class="btn" style="background: #2ed573;">PLAY AGAIN</button>
   </div>
@@ -142,6 +148,7 @@
     let isGameOver = false;
     
     let score = 0;
+    let coinsCount = 0;
     let highScore = localStorage.getItem('ballRunHighScore') || 0;
     let lastCheckpoint = 0;
     let checkpointCount = 0;
@@ -187,6 +194,13 @@
         gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
         osc.start();
         osc.stop(audioCtx.currentTime + 0.25);
+      } else if (type === 'coin') {
+        osc.frequency.setValueAtTime(987.77, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(1318.51, audioCtx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
       } else if (type === 'lose') {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(200, audioCtx.currentTime);
@@ -207,6 +221,7 @@
     let obstacles = [];
     let checkpoints = [];
     let powerups = [];
+    let coins = [];
     let keys = {};
 
     window.addEventListener('keydown', e => keys[e.code] = true);
@@ -312,6 +327,7 @@
       const isNewBest = score >= highScore && score > 0;
       document.getElementById('new-best-banner').style.display = isNewBest ? 'block' : 'none';
       document.getElementById('final-score').innerText = score;
+      document.getElementById('final-coins').innerText = coinsCount;
       document.getElementById('final-high-score').innerText = highScore;
 
       pauseBtn.style.display = 'none';
@@ -323,6 +339,7 @@
       isGameOver = false;
       isPaused = false;
       score = 0;
+      coinsCount = 0;
       speed = 0.3;
       lastCheckpoint = 0;
       checkpointCount = 0;
@@ -334,11 +351,16 @@
       document.getElementById('jump-badge').style.display = 'none';
 
       document.getElementById('dist').innerText = score;
+      document.getElementById('coins').innerText = coinsCount;
       document.getElementById('cp').innerText = checkpointCount;
 
       player.position.set(0, 1, 0);
       player.rotation.set(0, 0, 0);
       velocityY = 0;
+
+      // Reset items visibility
+      powerups.forEach(p => { p.collected = false; p.mesh.visible = true; });
+      coins.forEach(c => { c.collected = false; c.mesh.visible = true; });
 
       gameoverModal.style.display = 'none';
       pauseModal.style.display = 'none';
@@ -363,7 +385,7 @@
       scene.add(light);
       scene.add(new THREE.AmbientLight(0x404040));
 
-      // Player Ball with Grid Texture for rolling effect
+      // Player Ball Texture
       const canvas = document.createElement('canvas');
       canvas.width = 256; canvas.height = 256;
       const ctx = canvas.getContext('2d');
@@ -382,7 +404,7 @@
       player.position.set(0, 1, 0);
       scene.add(player);
 
-      // Shield Aura Mesh
+      // Shield Aura
       const auraGeo = new THREE.SphereGeometry(1.3, 32, 32);
       const auraMat = new THREE.MeshBasicMaterial({ color: 0x00d2d3, transparent: true, opacity: 0.4, wireframe: true });
       shieldAura = new THREE.Mesh(auraGeo, auraMat);
@@ -396,11 +418,26 @@
       track.position.set(0, 0, -990);
       scene.add(track);
 
-      // Spawn elements along path
+      // Spawn track items
       for (let z = -30; z > -1500; z -= 30) {
         spawnObstacle(z);
+
+        // Spawn Shield 10 units BEFORE kill bricks so you can grab it easily
+        if (Math.abs(z) % 120 === 0) {
+          spawnPowerup(z + 10, 'shield');
+        }
+
+        // Spawn Jump Boost cleanly floating above track
+        if (Math.abs(z) % 80 === 0) {
+          spawnPowerup(z, 'jump');
+        }
+
+        // Spawn Coins
+        if (Math.abs(z) % 15 === 0) {
+          spawnCoin(z);
+        }
+
         if (Math.abs(z) % 150 === 0) spawnCheckpoint(z);
-        if (Math.abs(z) % 90 === 0) spawnPowerup(z);
       }
 
       startScoreTimer();
@@ -431,17 +468,31 @@
       checkpoints.push({ mesh: cp, z: z });
     }
 
-    function spawnPowerup(z) {
-      const type = Math.random() > 0.5 ? 'shield' : 'jump';
+    function spawnPowerup(z, forcedType) {
+      const type = forcedType || (Math.random() > 0.5 ? 'shield' : 'jump');
       const color = type === 'shield' ? 0x00d2d3 : 0x1dd1a1;
-      const geo = new THREE.OctahedronGeometry(0.8);
-      const mat = new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5 });
+      
+      // Distinct geometry: Shield = Octahedron, Jump = Icosahedron
+      const geo = type === 'shield' ? new THREE.OctahedronGeometry(0.9) : new THREE.IcosahedronGeometry(0.9);
+      const mat = new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.6 });
       const pUp = new THREE.Mesh(geo, mat);
 
       const xPos = (Math.random() - 0.5) * 6;
-      pUp.position.set(xPos, 1.5, z);
+      pUp.position.set(xPos, 1.8, z);
       scene.add(pUp);
       powerups.push({ mesh: pUp, type: type, collected: false });
+    }
+
+    function spawnCoin(z) {
+      const geo = new THREE.CylinderGeometry(0.6, 0.6, 0.15, 20);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xf1c40f, metalness: 0.8, roughness: 0.2 });
+      const coin = new THREE.Mesh(geo, mat);
+
+      const xPos = (Math.random() - 0.5) * 7;
+      coin.position.set(xPos, 1.2, z);
+      coin.rotation.x = Math.PI / 2; // Face forward
+      scene.add(coin);
+      coins.push({ mesh: coin, collected: false });
     }
 
     function animate() {
@@ -455,7 +506,7 @@
       // Rolling Ball Physics Animation
       player.rotation.x -= speed / 1.0; 
 
-      // Controls & Rolling Rotation on X axis
+      // Controls
       if (keys['ArrowLeft'] || keys['KeyA']) {
         player.position.x -= 0.15;
         player.rotation.z += 0.15;
@@ -489,7 +540,7 @@
       camera.position.set(player.position.x, player.position.y + 3, player.position.z + 8);
       camera.lookAt(player.position.x, player.position.y, player.position.z - 5);
 
-      // Checkpoint logic
+      // Checkpoints
       checkpoints.forEach(cp => {
         if (Math.abs(player.position.z - cp.z) < 2 && lastCheckpoint !== cp.z) {
           lastCheckpoint = cp.z;
@@ -508,7 +559,21 @@
           if (pUp.type === 'shield') activateShield();
           if (pUp.type === 'jump') activateJumpBoost();
         } else if (!pUp.collected) {
-          pUp.mesh.rotation.y += 0.03;
+          pUp.mesh.rotation.y += 0.04;
+          pUp.mesh.rotation.x += 0.02;
+        }
+      });
+
+      // Coin Collision Logic
+      coins.forEach(c => {
+        if (!c.collected && player.position.distanceTo(c.mesh.position) < 1.5) {
+          c.collected = true;
+          c.mesh.visible = false;
+          coinsCount += 1;
+          document.getElementById('coins').innerText = coinsCount;
+          playSound('coin');
+        } else if (!c.collected) {
+          c.mesh.rotation.z += 0.05; // Spin coin
         }
       });
 
@@ -523,12 +588,11 @@
 
         if (collisionX && collisionY && collisionZ) {
           if (hasShield) {
-            // Shield absorbs damage and gets removed
             hasShield = false;
             shieldAura.visible = false;
             document.getElementById('shield-badge').style.display = 'none';
             clearInterval(shieldTimer);
-            obs.mesh.position.y = -10; // Destroy obstacle
+            obs.mesh.position.y = -10; // Clear obstacle
           } else {
             triggerGameOver();
           }
