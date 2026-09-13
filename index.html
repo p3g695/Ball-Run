@@ -38,6 +38,25 @@
       padding: 10px 15px;
       border-radius: 8px;
     }
+    #powerup-status {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .status-badge {
+      padding: 8px 15px;
+      border-radius: 20px;
+      font-weight: bold;
+      font-size: 14px;
+      display: none;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+    }
+    #shield-badge { background: #00d2d3; color: #000; }
+    #jump-badge { background: #1dd1a1; color: #000; }
     .btn {
       padding: 12px 24px;
       font-weight: bold;
@@ -95,6 +114,11 @@
     Score: <span id="dist">0</span> | High Score: <span id="high-score">0</span> | Checkpoint: <span id="cp">0</span>
   </div>
 
+  <div id="powerup-status">
+    <div id="shield-badge" class="status-badge">🛡️ SHIELD: <span id="shield-time">5</span>s</div>
+    <div id="jump-badge" class="status-badge">🦘 JUMP BOOST: <span id="jump-time">5</span>s</div>
+  </div>
+
   <!-- Pause Screen Modal -->
   <div id="pause-modal" class="modal">
     <div>GAME PAUSED</div>
@@ -112,7 +136,7 @@
   </div>
 
   <script>
-    let scene, camera, renderer, player;
+    let scene, camera, renderer, player, shieldAura;
     let speed = 0.3;
     let isPaused = false;
     let isGameOver = false;
@@ -123,7 +147,16 @@
     let checkpointCount = 0;
     let scoreInterval = null;
 
-    // Web Audio Context for sound effects
+    // Power-up states & timers
+    let hasShield = false;
+    let shieldTimer = null;
+    let shieldTimeLeft = 0;
+
+    let hasJumpBoost = false;
+    let jumpBoostTimer = null;
+    let jumpBoostTimeLeft = 0;
+
+    // Web Audio Context
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     function playSound(type) {
@@ -147,6 +180,13 @@
         gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
         osc.start();
         osc.stop(audioCtx.currentTime + 0.3);
+      } else if (type === 'powerup') {
+        osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.25);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.25);
       } else if (type === 'lose') {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(200, audioCtx.currentTime);
@@ -161,11 +201,12 @@
     // Physics
     let velocityY = 0;
     const gravity = -0.015;
-    const jumpStrength = 0.35;
+    let baseJumpStrength = 0.35;
     let isGrounded = true;
 
     let obstacles = [];
     let checkpoints = [];
+    let powerups = [];
     let keys = {};
 
     window.addEventListener('keydown', e => keys[e.code] = true);
@@ -183,6 +224,48 @@
     pauseBtn.addEventListener('click', pauseGame);
     unpauseBtn.addEventListener('click', unpauseGame);
     restartBtn.addEventListener('click', restartGame);
+
+    function activateShield() {
+      hasShield = true;
+      shieldTimeLeft = 5;
+      shieldAura.visible = true;
+      document.getElementById('shield-badge').style.display = 'block';
+      document.getElementById('shield-time').innerText = shieldTimeLeft;
+
+      clearInterval(shieldTimer);
+      shieldTimer = setInterval(() => {
+        if (!isPaused && !isGameOver) {
+          shieldTimeLeft--;
+          document.getElementById('shield-time').innerText = shieldTimeLeft;
+          if (shieldTimeLeft <= 0) {
+            hasShield = false;
+            shieldAura.visible = false;
+            document.getElementById('shield-badge').style.display = 'none';
+            clearInterval(shieldTimer);
+          }
+        }
+      }, 1000);
+    }
+
+    function activateJumpBoost() {
+      hasJumpBoost = true;
+      jumpBoostTimeLeft = 5;
+      document.getElementById('jump-badge').style.display = 'block';
+      document.getElementById('jump-time').innerText = jumpBoostTimeLeft;
+
+      clearInterval(jumpBoostTimer);
+      jumpBoostTimer = setInterval(() => {
+        if (!isPaused && !isGameOver) {
+          jumpBoostTimeLeft--;
+          document.getElementById('jump-time').innerText = jumpBoostTimeLeft;
+          if (jumpBoostTimeLeft <= 0) {
+            hasJumpBoost = false;
+            document.getElementById('jump-badge').style.display = 'none';
+            clearInterval(jumpBoostTimer);
+          }
+        }
+      }, 1000);
+    }
 
     function pauseGame() {
       if (isGameOver) return;
@@ -222,6 +305,8 @@
     function triggerGameOver() {
       isGameOver = true;
       clearInterval(scoreInterval);
+      clearInterval(shieldTimer);
+      clearInterval(jumpBoostTimer);
       playSound('lose');
 
       const isNewBest = score >= highScore && score > 0;
@@ -242,10 +327,17 @@
       lastCheckpoint = 0;
       checkpointCount = 0;
 
+      hasShield = false;
+      shieldAura.visible = false;
+      hasJumpBoost = false;
+      document.getElementById('shield-badge').style.display = 'none';
+      document.getElementById('jump-badge').style.display = 'none';
+
       document.getElementById('dist').innerText = score;
       document.getElementById('cp').innerText = checkpointCount;
 
       player.position.set(0, 1, 0);
+      player.rotation.set(0, 0, 0);
       velocityY = 0;
 
       gameoverModal.style.display = 'none';
@@ -271,12 +363,31 @@
       scene.add(light);
       scene.add(new THREE.AmbientLight(0x404040));
 
-      // Player
+      // Player Ball with Grid Texture for rolling effect
+      const canvas = document.createElement('canvas');
+      canvas.width = 256; canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#00d2d3'; ctx.fillRect(0,0,256,256);
+      ctx.fillStyle = '#333';
+      ctx.fillRect(0,0,128,128); ctx.fillRect(128,128,128,128);
+      
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(2, 2);
+
       const playerGeo = new THREE.SphereGeometry(1, 32, 32);
-      const playerMat = new THREE.MeshStandardMaterial({ color: 0x00d2d3 });
+      const playerMat = new THREE.MeshStandardMaterial({ map: texture });
       player = new THREE.Mesh(playerGeo, playerMat);
       player.position.set(0, 1, 0);
       scene.add(player);
+
+      // Shield Aura Mesh
+      const auraGeo = new THREE.SphereGeometry(1.3, 32, 32);
+      const auraMat = new THREE.MeshBasicMaterial({ color: 0x00d2d3, transparent: true, opacity: 0.4, wireframe: true });
+      shieldAura = new THREE.Mesh(auraGeo, auraMat);
+      shieldAura.visible = false;
+      player.add(shieldAura);
 
       // Track
       const trackGeo = new THREE.BoxGeometry(10, 0.1, 2000);
@@ -285,10 +396,11 @@
       track.position.set(0, 0, -990);
       scene.add(track);
 
-      // Spawn initial elements
+      // Spawn elements along path
       for (let z = -30; z > -1500; z -= 30) {
         spawnObstacle(z);
         if (Math.abs(z) % 150 === 0) spawnCheckpoint(z);
+        if (Math.abs(z) % 90 === 0) spawnPowerup(z);
       }
 
       startScoreTimer();
@@ -296,8 +408,7 @@
     }
 
     function spawnObstacle(z) {
-      // Super wide kill brick sizing (covers almost full track width requiring a jump)
-      const width = Math.random() * 1.5 + 8.5; // 8.5 to 10 units wide
+      const width = Math.random() * 1.5 + 8.5;
       const height = 1.0;
       const depth = 0.8;
 
@@ -320,6 +431,19 @@
       checkpoints.push({ mesh: cp, z: z });
     }
 
+    function spawnPowerup(z) {
+      const type = Math.random() > 0.5 ? 'shield' : 'jump';
+      const color = type === 'shield' ? 0x00d2d3 : 0x1dd1a1;
+      const geo = new THREE.OctahedronGeometry(0.8);
+      const mat = new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5 });
+      const pUp = new THREE.Mesh(geo, mat);
+
+      const xPos = (Math.random() - 0.5) * 6;
+      pUp.position.set(xPos, 1.5, z);
+      scene.add(pUp);
+      powerups.push({ mesh: pUp, type: type, collected: false });
+    }
+
     function animate() {
       requestAnimationFrame(animate);
       if (isPaused || isGameOver) return;
@@ -328,17 +452,28 @@
       speed += 0.00005; 
       player.position.z -= speed;
 
-      // Controls
-      if (keys['ArrowLeft'] || keys['KeyA']) player.position.x -= 0.15;
-      if (keys['ArrowRight'] || keys['KeyD']) player.position.x += 0.15;
+      // Rolling Ball Physics Animation
+      player.rotation.x -= speed / 1.0; 
 
+      // Controls & Rolling Rotation on X axis
+      if (keys['ArrowLeft'] || keys['KeyA']) {
+        player.position.x -= 0.15;
+        player.rotation.z += 0.15;
+      }
+      if (keys['ArrowRight'] || keys['KeyD']) {
+        player.position.x += 0.15;
+        player.rotation.z -= 0.15;
+      }
+
+      // Jump Action
+      const activeJumpStrength = hasJumpBoost ? 0.55 : baseJumpStrength;
       if ((keys['Space'] || keys['KeyW'] || keys['ArrowUp']) && isGrounded) {
-        velocityY = jumpStrength;
+        velocityY = activeJumpStrength;
         isGrounded = false;
         playSound('jump');
       }
 
-      // Physics
+      // Gravity Physics
       player.position.y += velocityY;
       velocityY += gravity;
 
@@ -364,7 +499,20 @@
         }
       });
 
-      // Kill Brick Collision
+      // Power-up Collision Logic
+      powerups.forEach(pUp => {
+        if (!pUp.collected && player.position.distanceTo(pUp.mesh.position) < 1.8) {
+          pUp.collected = true;
+          pUp.mesh.visible = false;
+          playSound('powerup');
+          if (pUp.type === 'shield') activateShield();
+          if (pUp.type === 'jump') activateJumpBoost();
+        } else if (!pUp.collected) {
+          pUp.mesh.rotation.y += 0.03;
+        }
+      });
+
+      // Kill Brick Collision Logic
       obstacles.forEach(obs => {
         const p = player.position;
         const b = obs.mesh.position;
@@ -374,7 +522,16 @@
         const collisionZ = Math.abs(p.z - b.z) < (obs.depth / 2 + 0.8);
 
         if (collisionX && collisionY && collisionZ) {
-          triggerGameOver();
+          if (hasShield) {
+            // Shield absorbs damage and gets removed
+            hasShield = false;
+            shieldAura.visible = false;
+            document.getElementById('shield-badge').style.display = 'none';
+            clearInterval(shieldTimer);
+            obs.mesh.position.y = -10; // Destroy obstacle
+          } else {
+            triggerGameOver();
+          }
         }
       });
 
