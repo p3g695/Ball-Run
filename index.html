@@ -70,6 +70,12 @@
     let lastCheckpoint = 0;
     let checkpointCount = 0;
     
+    // Jump & Gravity physics variables
+    let velocityY = 0;
+    const gravity = -0.015;
+    const jumpStrength = 0.35;
+    let isGrounded = true;
+
     let obstacles = [];
     let checkpoints = [];
     let keys = {};
@@ -101,7 +107,7 @@
 
       // Player Ball
       const playerGeo = new THREE.SphereGeometry(1, 32, 32);
-      const playerMat = new THREE.MeshStandardMaterial({ color: 0x00d2d3 });
+      playerMat = new THREE.MeshStandardMaterial({ color: 0x00d2d3 });
       player = new THREE.Mesh(playerGeo, playerMat);
       player.position.set(0, 1, 0);
       scene.add(player);
@@ -123,15 +129,19 @@
     }
 
     function spawnObstacle(z) {
-      const size = Math.random() * 1.5 + 1;
-      const geo = new THREE.BoxGeometry(size, size, size);
-      const mat = new THREE.MeshStandardMaterial({ color: 0xff6b6b });
+      // Roblox-style kill brick proportions (Wide bar across sections)
+      const width = Math.random() * 3 + 2; // 2 to 5 units wide
+      const height = 0.8;                 // Low brick height
+      const depth = 0.8;                  // Thin obstacle depth
+
+      const geo = new THREE.BoxGeometry(width, height, depth);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff4757, emissive: 0x330000 });
       const obs = new THREE.Mesh(geo, mat);
       
-      const xPos = (Math.random() - 0.5) * 8;
-      obs.position.set(xPos, size / 2, z);
+      const xPos = (Math.random() - 0.5) * (10 - width);
+      obs.position.set(xPos, height / 2, z);
       scene.add(obs);
-      obstacles.push(obs);
+      obstacles.push({ mesh: obs, width: width, height: height, depth: depth });
     }
 
     function spawnCheckpoint(z) {
@@ -147,18 +157,35 @@
       requestAnimationFrame(animate);
       if (isPaused) return;
 
-      // Player Forward Movement (Gets faster over distance)
-      speed += 0.0001; 
+      // Player Forward Movement (Gradually accelerates over distance)
+      speed += 0.00005; 
       player.position.z -= speed;
 
       // Steering
       if (keys['ArrowLeft'] || keys['KeyA']) player.position.x -= 0.15;
       if (keys['ArrowRight'] || keys['KeyD']) player.position.x += 0.15;
 
-      // Keep within track limits
-      player.position.x = Math.max(-4.5, Math.min(4.5, player.position.x));
+      // Jump Action (Spacebar, W, or Up Arrow)
+      if ((keys['Space'] || keys['KeyW'] || keys['ArrowUp']) && isGrounded) {
+        velocityY = jumpStrength;
+        isGrounded = false;
+      }
 
-      // Camera Follows Player
+      // Apply Gravity Physics
+      player.position.y += velocityY;
+      velocityY += gravity;
+
+      // Ground Check
+      if (player.position.y <= 1) {
+        player.position.y = 1;
+        velocityY = 0;
+        isGrounded = true;
+      }
+
+      // Keep within track bounds
+      player.position.x = Math.max(-4, Math.min(4, player.position.x));
+
+      // Camera Position
       camera.position.set(player.position.x, player.position.y + 3, player.position.z + 8);
       camera.lookAt(player.position.x, player.position.y, player.position.z - 5);
 
@@ -166,7 +193,7 @@
       distance = Math.floor(Math.abs(player.position.z));
       document.getElementById('dist').innerText = distance;
 
-      // Checkpoint detection
+      // Checkpoint hit detection
       checkpoints.forEach(cp => {
         if (Math.abs(player.position.z - cp.z) < 2 && lastCheckpoint !== cp.z) {
           lastCheckpoint = cp.z;
@@ -175,13 +202,21 @@
         }
       });
 
-      // Collision Detection
+      // Box Collision Detection for Kill Bricks
       obstacles.forEach(obs => {
-        const dist = player.position.distanceTo(obs.position);
-        if (dist < 1.5) {
-          // Reset to last checkpoint on collision
+        const p = player.position;
+        const b = obs.mesh.position;
+
+        const collisionX = Math.abs(p.x - b.x) < (obs.width / 2 + 0.8);
+        const collisionY = Math.abs(p.y - b.y) < (obs.height / 2 + 0.8);
+        const collisionZ = Math.abs(p.z - b.z) < (obs.depth / 2 + 0.8);
+
+        if (collisionX && collisionY && collisionZ) {
+          // Reset player to latest checkpoint
           player.position.z = lastCheckpoint;
           player.position.x = 0;
+          player.position.y = 1;
+          velocityY = 0;
         }
       });
 
