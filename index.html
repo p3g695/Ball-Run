@@ -8,48 +8,79 @@
     body {
       margin: 0;
       overflow: hidden;
-      font-family: sans-serif;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       background: #111;
       color: #fff;
     }
+    #game-canvas {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      transition: filter 0.3s ease;
+    }
+    .blur-bg {
+      filter: blur(8px);
+    }
     #ui {
       position: absolute;
-      top: 10px;
-      left: 10px;
+      top: 15px;
+      left: 15px;
       z-index: 10;
-      display: flex;
-      gap: 15px;
-      align-items: center;
-    }
-    button {
-      padding: 10px 20px;
-      font-weight: bold;
-      background: #ff4757;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
     }
     #score-board {
       position: absolute;
-      top: 10px;
+      top: 15px;
       right: 20px;
-      font-size: 20px;
+      font-size: 18px;
       font-weight: bold;
       z-index: 10;
+      background: rgba(0,0,0,0.5);
+      padding: 10px 15px;
+      border-radius: 8px;
     }
-    #overlay {
+    .btn {
+      padding: 12px 24px;
+      font-weight: bold;
+      font-size: 16px;
+      background: #ff4757;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+      transition: transform 0.1s ease, background 0.2s ease;
+    }
+    .btn:hover {
+      transform: scale(1.05);
+      background: #ff6b81;
+    }
+    .modal {
       position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      font-size: 32px;
+      font-size: 24px;
       font-weight: bold;
       display: none;
-      z-index: 10;
-      background: rgba(0,0,0,0.8);
-      padding: 20px 40px;
-      border-radius: 10px;
+      flex-direction: column;
+      align-items: center;
+      gap: 15px;
+      z-index: 20;
+      background: rgba(20, 20, 30, 0.9);
+      padding: 30px 50px;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+      text-align: center;
+    }
+    .new-best {
+      color: #2ed573;
+      font-size: 28px;
+      text-transform: uppercase;
+      animation: pulse 1s infinite alternate;
+    }
+    @keyframes pulse {
+      from { transform: scale(1); }
+      to { transform: scale(1.1); }
     }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -57,20 +88,77 @@
 <body>
 
   <div id="ui">
-    <button id="pause-btn">PAUSE</button>
+    <button id="pause-btn" class="btn">PAUSE</button>
   </div>
-  <div id="score-board">Distance: <span id="dist">0</span>m | Checkpoint: <span id="cp">0</span></div>
-  <div id="overlay">PAUSED</div>
+
+  <div id="score-board">
+    Score: <span id="dist">0</span> | High Score: <span id="high-score">0</span> | Checkpoint: <span id="cp">0</span>
+  </div>
+
+  <!-- Pause Screen Modal -->
+  <div id="pause-modal" class="modal">
+    <div>GAME PAUSED</div>
+    <div style="font-size: 18px; color: #aaa;">High Score: <span id="pause-high-score">0</span></div>
+    <button id="unpause-btn" class="btn">RESUME</button>
+  </div>
+
+  <!-- Game Over Screen Modal -->
+  <div id="gameover-modal" class="modal">
+    <div id="new-best-banner" class="new-best" style="display: none;">NEW BEST! 🎉</div>
+    <div style="color: #ff4757; font-size: 36px;">GAME OVER</div>
+    <div>Score: <span id="final-score">0</span></div>
+    <div>Best Score: <span id="final-high-score">0</span></div>
+    <button id="restart-btn" class="btn" style="background: #2ed573;">PLAY AGAIN</button>
+  </div>
 
   <script>
     let scene, camera, renderer, player;
     let speed = 0.3;
     let isPaused = false;
-    let distance = 0;
+    let isGameOver = false;
+    
+    let score = 0;
+    let highScore = localStorage.getItem('ballRunHighScore') || 0;
     let lastCheckpoint = 0;
     let checkpointCount = 0;
-    
-    // Jump & Gravity physics variables
+    let scoreInterval = null;
+
+    // Web Audio Context for sound effects
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function playSound(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      if (type === 'jump') {
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.15);
+      } else if (type === 'checkpoint') {
+        osc.frequency.setValueAtTime(523.25, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      } else if (type === 'lose') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(60, audioCtx.currentTime + 0.4);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.4);
+      }
+    }
+
+    // Physics
     let velocityY = 0;
     const gravity = -0.015;
     const jumpStrength = 0.35;
@@ -80,15 +168,93 @@
     let checkpoints = [];
     let keys = {};
 
-    // Controls
     window.addEventListener('keydown', e => keys[e.code] = true);
     window.addEventListener('keyup', e => keys[e.code] = false);
 
-    document.getElementById('pause-btn').addEventListener('click', () => {
-      isPaused = !isPaused;
-      document.getElementById('overlay').style.display = isPaused ? 'block' : 'none';
-      document.getElementById('pause-btn').innerText = isPaused ? 'RESUME' : 'PAUSE';
-    });
+    // Pause UI Controls
+    const pauseBtn = document.getElementById('pause-btn');
+    const unpauseBtn = document.getElementById('unpause-btn');
+    const pauseModal = document.getElementById('pause-modal');
+    const gameoverModal = document.getElementById('gameover-modal');
+    const restartBtn = document.getElementById('restart-btn');
+
+    document.getElementById('high-score').innerText = highScore;
+
+    pauseBtn.addEventListener('click', pauseGame);
+    unpauseBtn.addEventListener('click', unpauseGame);
+    restartBtn.addEventListener('click', restartGame);
+
+    function pauseGame() {
+      if (isGameOver) return;
+      isPaused = true;
+      clearInterval(scoreInterval);
+      pauseBtn.style.display = 'none';
+      pauseModal.style.display = 'flex';
+      document.getElementById('pause-high-score').innerText = highScore;
+      renderer.domElement.classList.add('blur-bg');
+    }
+
+    function unpauseGame() {
+      if (isGameOver) return;
+      isPaused = false;
+      pauseModal.style.display = 'none';
+      pauseBtn.style.display = 'block';
+      renderer.domElement.classList.remove('blur-bg');
+      startScoreTimer();
+    }
+
+    function startScoreTimer() {
+      clearInterval(scoreInterval);
+      scoreInterval = setInterval(() => {
+        if (!isPaused && !isGameOver) {
+          score += 1;
+          document.getElementById('dist').innerText = score;
+
+          if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('ballRunHighScore', highScore);
+            document.getElementById('high-score').innerText = highScore;
+          }
+        }
+      }, 1000);
+    }
+
+    function triggerGameOver() {
+      isGameOver = true;
+      clearInterval(scoreInterval);
+      playSound('lose');
+
+      const isNewBest = score >= highScore && score > 0;
+      document.getElementById('new-best-banner').style.display = isNewBest ? 'block' : 'none';
+      document.getElementById('final-score').innerText = score;
+      document.getElementById('final-high-score').innerText = highScore;
+
+      pauseBtn.style.display = 'none';
+      gameoverModal.style.display = 'flex';
+      renderer.domElement.classList.add('blur-bg');
+    }
+
+    function restartGame() {
+      isGameOver = false;
+      isPaused = false;
+      score = 0;
+      speed = 0.3;
+      lastCheckpoint = 0;
+      checkpointCount = 0;
+
+      document.getElementById('dist').innerText = score;
+      document.getElementById('cp').innerText = checkpointCount;
+
+      player.position.set(0, 1, 0);
+      velocityY = 0;
+
+      gameoverModal.style.display = 'none';
+      pauseModal.style.display = 'none';
+      pauseBtn.style.display = 'block';
+      renderer.domElement.classList.remove('blur-bg');
+
+      startScoreTimer();
+    }
 
     function init() {
       scene = new THREE.Scene();
@@ -97,22 +263,22 @@
       camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
       renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.domElement.id = 'game-canvas';
       document.body.appendChild(renderer.domElement);
 
-      // Lighting
       const light = new THREE.DirectionalLight(0xffffff, 1);
       light.position.set(0, 20, 10);
       scene.add(light);
       scene.add(new THREE.AmbientLight(0x404040));
 
-      // Player Ball
+      // Player
       const playerGeo = new THREE.SphereGeometry(1, 32, 32);
-      playerMat = new THREE.MeshStandardMaterial({ color: 0x00d2d3 });
+      const playerMat = new THREE.MeshStandardMaterial({ color: 0x00d2d3 });
       player = new THREE.Mesh(playerGeo, playerMat);
       player.position.set(0, 1, 0);
       scene.add(player);
 
-      // Floor Track
+      // Track
       const trackGeo = new THREE.BoxGeometry(10, 0.1, 2000);
       const trackMat = new THREE.MeshStandardMaterial({ color: 0x222f3e });
       const track = new THREE.Mesh(trackGeo, trackMat);
@@ -125,14 +291,15 @@
         if (Math.abs(z) % 150 === 0) spawnCheckpoint(z);
       }
 
+      startScoreTimer();
       animate();
     }
 
     function spawnObstacle(z) {
-      // Roblox-style kill brick proportions (Wide bar across sections)
-      const width = Math.random() * 3 + 2; // 2 to 5 units wide
-      const height = 0.8;                 // Low brick height
-      const depth = 0.8;                  // Thin obstacle depth
+      // Wider Roblox kill brick sizing
+      const width = Math.random() * 2 + 6; // 6 to 8 units wide across track
+      const height = 0.8;
+      const depth = 0.8;
 
       const geo = new THREE.BoxGeometry(width, height, depth);
       const mat = new THREE.MeshStandardMaterial({ color: 0xff4757, emissive: 0x330000 });
@@ -155,54 +322,49 @@
 
     function animate() {
       requestAnimationFrame(animate);
-      if (isPaused) return;
+      if (isPaused || isGameOver) return;
 
-      // Player Forward Movement (Gradually accelerates over distance)
+      // Speed acceleration
       speed += 0.00005; 
       player.position.z -= speed;
 
-      // Steering
+      // Controls
       if (keys['ArrowLeft'] || keys['KeyA']) player.position.x -= 0.15;
       if (keys['ArrowRight'] || keys['KeyD']) player.position.x += 0.15;
 
-      // Jump Action (Spacebar, W, or Up Arrow)
       if ((keys['Space'] || keys['KeyW'] || keys['ArrowUp']) && isGrounded) {
         velocityY = jumpStrength;
         isGrounded = false;
+        playSound('jump');
       }
 
-      // Apply Gravity Physics
+      // Physics
       player.position.y += velocityY;
       velocityY += gravity;
 
-      // Ground Check
       if (player.position.y <= 1) {
         player.position.y = 1;
         velocityY = 0;
         isGrounded = true;
       }
 
-      // Keep within track bounds
       player.position.x = Math.max(-4, Math.min(4, player.position.x));
 
-      // Camera Position
+      // Camera
       camera.position.set(player.position.x, player.position.y + 3, player.position.z + 8);
       camera.lookAt(player.position.x, player.position.y, player.position.z - 5);
 
-      // Distance score updates
-      distance = Math.floor(Math.abs(player.position.z));
-      document.getElementById('dist').innerText = distance;
-
-      // Checkpoint hit detection
+      // Checkpoint logic
       checkpoints.forEach(cp => {
         if (Math.abs(player.position.z - cp.z) < 2 && lastCheckpoint !== cp.z) {
           lastCheckpoint = cp.z;
           checkpointCount++;
           document.getElementById('cp').innerText = checkpointCount;
+          playSound('checkpoint');
         }
       });
 
-      // Box Collision Detection for Kill Bricks
+      // Kill Brick Collision
       obstacles.forEach(obs => {
         const p = player.position;
         const b = obs.mesh.position;
@@ -212,11 +374,7 @@
         const collisionZ = Math.abs(p.z - b.z) < (obs.depth / 2 + 0.8);
 
         if (collisionX && collisionY && collisionZ) {
-          // Reset player to latest checkpoint
-          player.position.z = lastCheckpoint;
-          player.position.x = 0;
-          player.position.y = 1;
-          velocityY = 0;
+          triggerGameOver();
         }
       });
 
