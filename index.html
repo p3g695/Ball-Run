@@ -296,9 +296,9 @@
     }
 
     function spawnObstacle(z) {
-      // Wider Roblox kill brick sizing
-      const width = Math.random() * 2 + 6; // 6 to 8 units wide across track
-      const height = 0.8;
+      // Super wide kill brick sizing (covers almost full track width requiring a jump)
+      const width = Math.random() * 1.5 + 8.5; // 8.5 to 10 units wide
+      const height = 1.0;
       const depth = 0.8;
 
       const geo = new THREE.BoxGeometry(width, height, depth);
